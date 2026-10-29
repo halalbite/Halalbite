@@ -42,6 +42,8 @@ USER_AGENT = "HalalBite-Import/1.0 (halalbiteapp@gmail.com)"
 
 # Nur Gastronomie – ohne Supermärkte und Metzger
 AMENITIES = ["restaurant", "fast_food", "cafe", "ice_cream", "food_court"]
+# Große Ketten, die HalalBite bewusst nicht zeigt (Name oder Marke)
+EXCLUDED_CHAINS = ["mcdonald", "burgerking"]
 
 # Bewusst einfache Abfrage (läuft schnell); Gastronomie wird danach in Python gefiltert
 OVERPASS_QUERY = """
@@ -123,6 +125,12 @@ def distance_m(lat1, lon1, lat2, lon2):
     dp, dl = p2 - p1, math.radians(lon2 - lon1)
     a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
     return 2 * r * math.asin(math.sqrt(a))
+
+
+def is_excluded_chain(tags):
+    text = " ".join(tags.get(k, "") for k in ("name", "brand", "operator"))
+    key = re.sub(r"[^a-z]", "", unicodedata.normalize("NFKD", text.lower()))
+    return any(chain in key for chain in EXCLUDED_CHAINS)
 
 
 def category_for(tags):
@@ -550,7 +558,8 @@ def main():
         token = login(url, key)
         headers = {"apikey": key, "Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-    elements = [e for e in fetch_osm() if e.get("tags", {}).get("amenity") in AMENITIES]
+    elements = [e for e in fetch_osm()
+                if e.get("tags", {}).get("amenity") in AMENITIES and not is_excluded_chain(e["tags"])]
     rows = [r for r in (to_row(e) for e in elements) if r]
 
     # Doppelte OSM-Einträge (gleicher Name an gleicher Stelle) zusammenfassen
