@@ -1,0 +1,40 @@
+# HalalBite – OpenStreetMap-Import automatisch jeden Montag um 04:00 Uhr (UTC)
+# Neue Halal-Orte erscheinen so von selbst in der App.
+# Manuell starten: GitHub → Actions → "OSM-Import" → "Run workflow"
+
+name: OSM-Import
+
+on:
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch: {}
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Adressen/Bilder werden zwischengespeichert → spätere Läufe sind schnell
+      - uses: actions/cache@v4
+        with:
+          path: |
+            tools/.geocode_cache.json
+            tools/.media_cache.json
+            tools/.osm_cache.json
+          key: osm-import-${{ github.run_id }}
+          restore-keys: osm-import-
+
+      - name: Import starten
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          HALALBITE_ADMIN_EMAIL: ${{ secrets.HALALBITE_ADMIN_EMAIL }}
+          HALALBITE_ADMIN_PASSWORD: ${{ secrets.HALALBITE_ADMIN_PASSWORD }}
+          MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
+        run: python tools/import_osm.py
