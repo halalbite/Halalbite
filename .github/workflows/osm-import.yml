@@ -27,6 +27,7 @@ jobs:
             tools/.geocode_cache.json
             tools/.media_cache.json
             tools/.osm_cache.json
+            tools/.instagram_cache.json
           key: osm-import-${{ github.run_id }}
           restore-keys: osm-import-
 
@@ -38,3 +39,12 @@ jobs:
           HALALBITE_ADMIN_PASSWORD: ${{ secrets.HALALBITE_ADMIN_PASSWORD }}
           MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
         run: python tools/import_osm.py
+
+      # Instagram-Profile von den Websites der Läden einsammeln (für die DM-Anfragen)
+      - name: Instagram-Profile suchen
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          HALALBITE_ADMIN_EMAIL: ${{ secrets.HALALBITE_ADMIN_EMAIL }}
+          HALALBITE_ADMIN_PASSWORD: ${{ secrets.HALALBITE_ADMIN_PASSWORD }}
+        run: python tools/find_instagram.py
