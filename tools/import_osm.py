@@ -114,6 +114,22 @@ def http(method, url, headers=None, body=None, timeout=200):
         return status, raw.decode(errors="replace")
 
 
+def fetch_all_rows(url, path, headers):
+    """Alle Zeilen einer REST-Abfrage, seitenweise (Supabase liefert max. 1.000 pro Anfrage).
+    path z. B. "restaurants?select=id,name&order=id.asc" – ein eigenes limit wird ersetzt."""
+    path = re.sub(r"[&?]limit=\d+", "", path)
+    if "order=" not in path:
+        path += "&order=id.asc"
+    rows = []
+    while True:
+        status, page = http("GET", f"{url}/rest/v1/{path}&limit=1000&offset={len(rows)}", headers=headers)
+        if status != 200 or not isinstance(page, list):
+            return status, page
+        rows += page
+        if len(page) < 1000:
+            return 200, rows
+
+
 def supabase_config():
     """URL und anon-Key: aus Umgebungsvariablen (GitHub Actions) oder aus der App."""
     if os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_ANON_KEY"):
@@ -257,9 +273,12 @@ def fetch_osm():
         for server in OVERPASS_URLS:
             status, data = http("POST", server, timeout=200,
                                 headers={"Content-Type": "application/x-www-form-urlencoded"}, body=body)
-            if status == 200 and isinstance(data, dict) and "elements" in data:
+            # "remark" = Overpass hat abgebrochen (Timeout/Speicher) → Ergebnis unvollständig
+            if status == 200 and isinstance(data, dict) and "elements" in data and not data.get("remark"):
                 OSM_CACHE.write_text(json.dumps(data["elements"]))
                 return data["elements"]
+            if isinstance(data, dict) and data.get("remark"):
+                data = f"unvollständig: {data['remark']}"
             last_error = f"{server}: {status} {str(data)[:150]}"
             print(f"   ⚠️ {server.split('/')[2]} nicht erreichbar – versuche nächsten Server …")
     if OSM_CACHE.exists():
@@ -523,22 +542,44 @@ def find_media(rows, mapillary_token=None, url=None, headers=None, limit=None):
 
 
 def keep_media_decisions(rows, url, headers):
-    """Bereits von euch freigegebene/abgelehnte Bilder nicht überschreiben"""
+    """Eure Entscheidungen nicht überschreiben: freigegebene/abgelehnte Straßenfotos sowie
+    Logos und Instagram-Namen, die in der App freigegeben bzw. von den Skripten
+    (find_instagram, instagram_logos, website_logos, clean_instagram) gepflegt wurden."""
+    fields = MEDIA_FIELDS + ["instagram", "hidden", "promoted_restaurant_id"]
     existing, offset = {}, 0
     while True:
-        status, page = http("GET", f"{url}/rest/v1/osm_places?select=osm_key,{','.join(MEDIA_FIELDS)}"
+        status, page = http("GET", f"{url}/rest/v1/osm_places?select=osm_key,{','.join(fields)}"
                                    f"&order=id.asc&limit=1000&offset={offset}", headers=headers)
         if status != 200 or not isinstance(page, list):
-            break
+            sys.exit(f"❌ Bestehende Orte konnten nicht geladen werden ({status}) – Import abgebrochen, "
+                     "damit keine gepflegten Daten überschrieben werden.")
         existing.update({p["osm_key"]: p for p in page})
         if len(page) < 1000:
             break
         offset += 1000
+
+    # Von tools/clean_instagram.py als ungültig erkannte Namen nicht aus OSM zurückholen
+    try:
+        invalid = set(json.loads((ROOT / "tools" / ".instagram_invalid.json").read_text()))
+    except (OSError, json.JSONDecodeError):
+        invalid = set()
+
     for r in rows:
         old = existing.get(r["osm_key"])
-        if old and old.get("image_status") in ("approved", "rejected", "pending") and old.get("image_url"):
+        if r.get("instagram") and r["instagram"].strip().lstrip("@").lower().rstrip("/").split("/")[-1] in invalid:
+            r["instagram"] = None
+        if not old:
+            continue
+        if old.get("image_status") in ("approved", "rejected", "pending") and old.get("image_url"):
             for field in ["image_url", "image_credit", "image_source", "image_status"]:
                 r[field] = old.get(field)
+        # Vorhandenes Logo (samt Bildnachweis) und Instagram-Name haben Vorrang vor OSM
+        if old.get("logo_url"):
+            r["logo_url"], r["logo_credit"] = old["logo_url"], old.get("logo_credit")
+        if old.get("instagram"):
+            r["instagram"] = old["instagram"]
+    # Anzahl der bisher sichtbaren Orte – Maßstab für den Plausibilitäts-Check beim Aufräumen
+    return sum(1 for p in existing.values() if not p.get("hidden") and p.get("promoted_restaurant_id") is None)
 
 
 def login(url, key):
@@ -585,10 +626,10 @@ def main():
         unique.setdefault((normalize(r["name"]), round(r["latitude"], 4), round(r["longitude"], 4)), r)
     rows = list(unique.values())
 
-    status, verified = http("GET", f"{url}/rest/v1/restaurants?select=name,latitude,longitude", headers=anon_headers)
+    status, verified = fetch_all_rows(url, "restaurants?select=name,latitude,longitude", anon_headers)
     verified = verified if status == 200 else []
     # Gelöschte Orte (Sperrliste) wie vorhandene behandeln, damit sie nicht wiederkommen
-    status, blocked = http("GET", f"{url}/rest/v1/osm_blocklist?select=name,latitude,longitude", headers=anon_headers)
+    status, blocked = fetch_all_rows(url, "osm_blocklist?select=name,latitude,longitude", anon_headers)
     if status == 200:
         verified += blocked
         print(f"   🚫 {len(blocked)} gelöschte Orte auf der Sperrliste")
@@ -630,7 +671,7 @@ def main():
         print("\nDry-Run – nichts hochgeladen.")
         return
 
-    keep_media_decisions(new_rows, url, headers)
+    visible_before = keep_media_decisions(new_rows, url, headers)
     run_started = datetime.now(timezone.utc).isoformat()
 
     print("\n⬆️  Lade hoch …")
@@ -644,6 +685,12 @@ def main():
             sys.exit(f"❌ Upload-Fehler {status}: {str(body)[:400]}")
         print(f"   {min(i + 200, len(new_rows))}/{len(new_rows)}")
 
+    # Plausibilitäts-Check: kommen deutlich weniger Orte als bisher, ist der OSM-Download
+    # vermutlich unvollständig → nicht aufräumen, sonst würden echte Orte gelöscht
+    if visible_before and len(new_rows) < 0.8 * visible_before:
+        print(f"\n⚠️ Nur {len(new_rows)} statt bisher {visible_before} Orte – Aufräumen übersprungen, "
+              "damit keine Orte versehentlich gelöscht werden. Bitte später erneut importieren.")
+        return
     # Aus OSM verschwundene Orte entfernen (übernommene und ausgeblendete bleiben)
     stale = urllib.parse.quote(run_started)
     status, _ = http("DELETE",

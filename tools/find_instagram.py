@@ -167,6 +167,11 @@ def main():
     # Namen, die auf mehr als 3 verschiedenen Websites auftauchen, gehören nicht einem Laden
     usage = Counter(h for entry in cache.values() for h in entry["handles"])
     shared = {h for h, n in usage.items() if n > 3}
+    # Von tools/clean_instagram.py als ungültig entfernte Namen nicht wieder eintragen
+    try:
+        shared |= set(json.loads((ROOT / "tools" / ".instagram_invalid.json").read_text()))
+    except (OSError, json.JSONDecodeError):
+        pass
 
     found = []
     for table, p in todo:
