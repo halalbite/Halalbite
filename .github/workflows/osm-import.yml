@@ -1,18 +1,22 @@
-# HalalBite – OpenStreetMap-Import automatisch jeden Montag um 04:00 Uhr (UTC)
+# HalalBite – OpenStreetMap-Import automatisch montags und donnerstags um 03:17 Uhr (UTC)
 # Neue Halal-Orte erscheinen so von selbst in der App.
 # Manuell starten: GitHub → Actions → "OSM-Import" → "Run workflow"
+#
+# Krumme Uhrzeit mit Absicht: zur vollen Stunde sind die öffentlichen Overpass-Server
+# durch viele automatische Abfragen oft ausgelastet.
 
 name: OSM-Import
 
 on:
   schedule:
-    - cron: "0 4 * * 1"
+    - cron: "17 3 * * 1,4"
   workflow_dispatch: {}
 
 jobs:
   import:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Bei ausgelasteten Servern wartet der Import bis zu ~20 Min. auf einen neuen Versuch
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -20,8 +24,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      # Adressen/Bilder werden zwischengespeichert → spätere Läufe sind schnell
-      - uses: actions/cache@v4
+      # Adressen/Bilder/letzter OSM-Download werden zwischengespeichert → spätere Läufe sind
+      # schnell, und bei ausgelasteten Servern nutzt der Import den letzten Download
+      - name: Zwischenspeicher laden
+        uses: actions/cache/restore@v4
         with:
           path: |
             tools/.geocode_cache.json
@@ -42,9 +48,23 @@ jobs:
 
       # Instagram-Profile von den Websites der Läden einsammeln (für die DM-Anfragen)
       - name: Instagram-Profile suchen
+        if: always()
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           HALALBITE_ADMIN_EMAIL: ${{ secrets.HALALBITE_ADMIN_EMAIL }}
           HALALBITE_ADMIN_PASSWORD: ${{ secrets.HALALBITE_ADMIN_PASSWORD }}
         run: python tools/find_instagram.py
+
+      # Immer speichern – auch wenn ein Schritt fehlschlägt (sonst gäbe es nie einen
+      # Zwischenspeicher, auf den der Import bei Überlastung ausweichen kann)
+      - name: Zwischenspeicher sichern
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            tools/.geocode_cache.json
+            tools/.media_cache.json
+            tools/.osm_cache.json
+            tools/.instagram_cache.json
+          key: osm-import-${{ github.run_id }}
