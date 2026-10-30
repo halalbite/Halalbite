@@ -44,6 +44,16 @@ USER_AGENT = "HalalBite-Import/1.0 (halalbiteapp@gmail.com)"
 AMENITIES = ["restaurant", "fast_food", "cafe", "ice_cream", "food_court"]
 # Große Ketten, die HalalBite bewusst nicht zeigt (Name oder Marke)
 EXCLUDED_CHAINS = ["mcdonald", "burgerking"]
+# Mensen/Studierendenwerk und typisch deutsche Gaststätten (Bier, Bratwurst, Schänke …) –
+# verglichen mit Name, Marke, Betreiber und Website (nur Buchstaben, ohne Umlaute)
+EXCLUDED_KINDS = [
+    "mensa", "studentenwerk", "studierendenwerk", "stubistro", "stucafe",
+    "bier", "brauhaus", "brauerei", "bratwurst", "wurstbude", "biergarten",
+    "schanke", "stuberl", "wirtshaus", "gasthaus", "gasthof", "kulperhutte",
+    "hotel", "motel", "hostel", "jugendherberge", "gastehaus", "pension",
+]
+# OSM-Kennzeichnung für Unterkünfte (Restaurant im Hotel)
+EXCLUDED_TOURISM = {"hotel", "motel", "hostel", "guest_house", "apartment", "chalet", "alpine_hut"}
 
 # Bewusst einfache Abfrage (läuft schnell); Gastronomie wird danach in Python gefiltert
 OVERPASS_QUERY = """
@@ -130,7 +140,14 @@ def distance_m(lat1, lon1, lat2, lon2):
 def is_excluded_chain(tags):
     text = " ".join(tags.get(k, "") for k in ("name", "brand", "operator"))
     key = re.sub(r"[^a-z]", "", unicodedata.normalize("NFKD", text.lower()))
-    return any(chain in key for chain in EXCLUDED_CHAINS)
+    if any(chain in key for chain in EXCLUDED_CHAINS + EXCLUDED_KINDS):
+        return True
+    if tags.get("tourism", "").lower() in EXCLUDED_TOURISM:
+        return True
+    # Website des Studierendenwerks bzw. eines Hotels → Mensa/Hotelrestaurant,
+    # auch wenn der Name es nicht verrät
+    website = (tags.get("website", "") + tags.get("contact:website", "")).lower()
+    return any(word in website for word in ("studentenwerk", "studierendenwerk", "hotel"))
 
 
 def category_for(tags):
