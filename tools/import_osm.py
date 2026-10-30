@@ -570,6 +570,13 @@ def main():
 
     status, verified = http("GET", f"{url}/rest/v1/restaurants?select=name,latitude,longitude", headers=anon_headers)
     verified = verified if status == 200 else []
+    # Gelöschte Orte (Sperrliste) wie vorhandene behandeln, damit sie nicht wiederkommen
+    status, blocked = http("GET", f"{url}/rest/v1/osm_blocklist?select=name,latitude,longitude", headers=anon_headers)
+    if status == 200:
+        verified += blocked
+        print(f"   🚫 {len(blocked)} gelöschte Orte auf der Sperrliste")
+    else:
+        print("   ⚠️ Sperrliste fehlt – bitte supabase/migrations/20261107_deleted_places_stay_deleted.sql ausführen")
     new_rows = [r for r in rows if not is_duplicate(r, verified)]
 
     if not args.no_geocode:
