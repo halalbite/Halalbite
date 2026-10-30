@@ -56,12 +56,19 @@ EXCLUDED_KINDS = [
 EXCLUDED_TOURISM = {"hotel", "motel", "hostel", "guest_house", "apartment", "chalet", "alpine_hut"}
 
 # Bewusst einfache Abfrage (läuft schnell); Gastronomie wird danach in Python gefiltert
+# Zwei einfache Vergleiche statt eines Suchmusters (~"^(yes|only)$") – gleiches Ergebnis,
+# aber deutlich weniger Last für die (oft ausgelasteten) öffentlichen Overpass-Server
 OVERPASS_QUERY = """
 [out:json][timeout:180];
 area["ISO3166-1"="DE"][admin_level=2]->.de;
-nwr["diet:halal"~"^(yes|only)$"](area.de);
+(
+  nwr["diet:halal"="yes"](area.de);
+  nwr["diet:halal"="only"](area.de);
+);
 out tags center;
 """
+# Wartezeiten (Sekunden) vor den Versuchsrunden über alle Server
+OVERPASS_RETRY_WAITS = [0, 120, 300, 600]
 
 # OSM-"cuisine" → HalalBite-Kategorie (PlaceCategory.rawValue in der App)
 CUISINE_MAP = [
@@ -269,7 +276,10 @@ def fetch_osm():
     print("⏳ Lade Halal-Orte aus OpenStreetMap (kann 1–3 Minuten dauern) …")
     body = urllib.parse.urlencode({"data": OVERPASS_QUERY}).encode()
     last_error = ""
-    for attempt in range(1):
+    for round_no, wait in enumerate(OVERPASS_RETRY_WAITS, 1):
+        if wait:
+            print(f"   ⏳ Alle Server ausgelastet – Runde {round_no}/{len(OVERPASS_RETRY_WAITS)} in {wait // 60} Min …")
+            time.sleep(wait)
         for server in OVERPASS_URLS:
             status, data = http("POST", server, timeout=200,
                                 headers={"Content-Type": "application/x-www-form-urlencoded"}, body=body)
@@ -279,14 +289,21 @@ def fetch_osm():
                 return data["elements"]
             if isinstance(data, dict) and data.get("remark"):
                 data = f"unvollständig: {data['remark']}"
-            last_error = f"{server}: {status} {str(data)[:150]}"
-            print(f"   ⚠️ {server.split('/')[2]} nicht erreichbar – versuche nächsten Server …")
+            reason = "ausgelastet" if "capacity" in str(data) or status in (429, 502, 503, 504) else f"HTTP {status}"
+            text = re.sub(r"<[^>]+>|\s+", " ", str(data)).strip()  # HTML-Fehlerseite → kurzer Text
+            last_error = f"{server}: {status} {text[:150]}"
+            print(f"   ⚠️ {server.split('/')[2]}: {reason}")
     if OSM_CACHE.exists():
         age_days = (time.time() - OSM_CACHE.stat().st_mtime) / 86400
         print(f"   ↩️  Server überlastet – nutze den letzten Download (vor {age_days:.0f} Tagen).")
         return json.loads(OSM_CACHE.read_text())
-    sys.exit(f"❌ Kein Overpass-Server erreichbar (überlastet). Bitte in 10–30 Minuten erneut versuchen.\n"
-             f"   Letzter Fehler: {last_error[:200]}")
+    message = (f"Kein Overpass-Server erreichbar (alle ausgelastet). Der nächste geplante Lauf versucht es "
+               f"erneut. Letzter Fehler: {last_error[:200]}")
+    if os.environ.get("GITHUB_ACTIONS"):
+        # Vorübergehende Überlastung ist kein Fehler im Projekt → Hinweis statt rotem Lauf
+        print(f"::warning title=OSM-Import übersprungen::{message}")
+        sys.exit(0)
+    sys.exit(f"❌ {message}\n   Bitte in 10–30 Minuten erneut versuchen.")
 
 
 def to_row(element):
