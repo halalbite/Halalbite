@@ -593,7 +593,7 @@ def keep_media_decisions(rows, url, headers):
     """Eure Entscheidungen nicht überschreiben: freigegebene/abgelehnte Straßenfotos sowie
     Logos und Instagram-Namen, die in der App freigegeben bzw. von den Skripten
     (find_instagram, instagram_logos, website_logos, clean_instagram) gepflegt wurden."""
-    fields = MEDIA_FIELDS + ["instagram", "hidden", "promoted_restaurant_id"]
+    fields = MEDIA_FIELDS + ["instagram", "hidden", "promoted_restaurant_id", "opening_hours", "phone", "website"]
     existing, offset = {}, 0
     while True:
         status, page = http("GET", f"{url}/rest/v1/osm_places?select=osm_key,{','.join(fields)}"
@@ -626,6 +626,10 @@ def keep_media_decisions(rows, url, headers):
             r["logo_url"], r["logo_credit"] = old["logo_url"], old.get("logo_credit")
         if old.get("instagram"):
             r["instagram"] = old["instagram"]
+        # Von tools/enrich_places.py nachgetragene Angaben behalten, solange OSM selbst keine hat
+        for field in ("opening_hours", "phone", "website"):
+            if not r.get(field) and old.get(field):
+                r[field] = old[field]
     # Anzahl der bisher sichtbaren Orte – Maßstab für den Plausibilitäts-Check beim Aufräumen
     return sum(1 for p in existing.values() if not p.get("hidden") and p.get("promoted_restaurant_id") is None)
 
