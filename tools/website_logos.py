@@ -14,7 +14,8 @@ Freigabe unter Einstellungen → Admin → Prüfen → „Logos“.
 
 Übersprungen werden:
   • Verzeichnis- und Lieferseiten (golocal, Lieferando, Einkaufszentren …) – deren Logo wäre falsch
-  • Bilder, die bei mehreren Orten identisch sind (z. B. Standard-Symbol eines Baukastens)
+  (Bilder, die bei mehreren Orten identisch sind, werden trotzdem vorgeschlagen – bei Ketten ist das
+  richtig; ein Standard-Symbol eines Baukastens lehnst du in der App einfach ab.)
   • zu kleine Bilder und SVG-Dateien (kann die App nicht anzeigen)
 
 Voraussetzung: SQL-Skript supabase/migrations/20261108_logo_candidates_website.sql ausgeführt.
@@ -218,13 +219,14 @@ def main():
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(find_logo, rows))
 
-    # Dasselbe Bild bei mehreren Orten = Standard-Symbol eines Baukastens/Verzeichnisses
+    # Dasselbe Bild bei mehreren Orten: bei Ketten richtig, sonst evtl. Standard-Symbol eines
+    # Baukastens → trotzdem vorschlagen (Entscheidung in der App), nur im Protokoll markieren
     shared = {h for h, n in Counter(r.get("_hash") for r in results if r.get("_hash")).items() if n >= 3}
     stats = Counter()
     for r in results:
         label = f"{r['name']} ({urllib.parse.urlparse(normalized_site(r['website'])).netloc})"
         if r.get("_hash") in shared:
-            r["_skip"] = "gleiches Bild wie bei anderen Orten (Standard-Symbol)"
+            label += " [gleiches Bild wie bei anderen Orten – beim Freigeben prüfen]"
         if r.get("_skip"):
             stats[r["_skip"]] += 1
             print(f"   ⏭  {label}: {r['_skip']}")
