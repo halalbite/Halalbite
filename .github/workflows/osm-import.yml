@@ -1,19 +1,32 @@
-# HalalBite – OpenStreetMap-Import automatisch montags und donnerstags um 03:17 Uhr (UTC)
-# Neue Halal-Orte erscheinen so von selbst in der App.
-# Manuell starten: GitHub → Actions → "OSM-Import" → "Run workflow"
+# HalalBite – automatische Datenpflege, montags und donnerstags um 03:17 Uhr (UTC)
+# Manuell starten: GitHub → Actions → "OSM-Import & Lücken füllen" → "Run workflow"
 #
-# Krumme Uhrzeit mit Absicht: zur vollen Stunde sind die öffentlichen Overpass-Server
-# durch viele automatische Abfragen oft ausgelastet.
+# Zwei getrennte Aufgaben:
+#   1. "OSM-Import"     – sucht neue Halal-Orte in OpenStreetMap und aktualisiert die vorhandenen
+#                         (gelöschte/ausgeblendete Orte bleiben weg, gepflegte Angaben bleiben erhalten)
+#   2. "Lücken füllen"  – prüft ALLE Orte der App (geprüfte + OSM) auf fehlende Angaben und trägt
+#                         nach, was sich finden lässt: Öffnungszeiten, Telefon, Website, Instagram,
+#                         Logo-Vorschläge (Logos erscheinen erst nach Freigabe in der App).
+#                         Läuft auch dann, wenn der OSM-Import gerade nicht klappt.
+#
+# Krumme Uhrzeit mit Absicht: zur vollen Stunde sind die öffentlichen Overpass-Server oft ausgelastet.
 
-name: OSM-Import
+name: OSM-Import & Lücken füllen
 
 on:
   schedule:
     - cron: "17 3 * * 1,4"
   workflow_dispatch: {}
 
+env:
+  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+  SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+  HALALBITE_ADMIN_EMAIL: ${{ secrets.HALALBITE_ADMIN_EMAIL }}
+  HALALBITE_ADMIN_PASSWORD: ${{ secrets.HALALBITE_ADMIN_PASSWORD }}
+
 jobs:
   import:
+    name: OSM-Import
     runs-on: ubuntu-latest
     # Bei ausgelasteten Servern wartet der Import bis zu ~20 Min. auf einen neuen Versuch
     timeout-minutes: 90
@@ -33,28 +46,13 @@ jobs:
             tools/.geocode_cache.json
             tools/.media_cache.json
             tools/.osm_cache.json
-            tools/.instagram_cache.json
           key: osm-import-${{ github.run_id }}
           restore-keys: osm-import-
 
-      - name: Import starten
+      - name: Neue Halal-Orte aus OpenStreetMap importieren
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-          HALALBITE_ADMIN_EMAIL: ${{ secrets.HALALBITE_ADMIN_EMAIL }}
-          HALALBITE_ADMIN_PASSWORD: ${{ secrets.HALALBITE_ADMIN_PASSWORD }}
           MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
         run: python tools/import_osm.py
-
-      # Instagram-Profile von den Websites der Läden einsammeln (für die DM-Anfragen)
-      - name: Instagram-Profile suchen
-        if: always()
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-          HALALBITE_ADMIN_EMAIL: ${{ secrets.HALALBITE_ADMIN_EMAIL }}
-          HALALBITE_ADMIN_PASSWORD: ${{ secrets.HALALBITE_ADMIN_PASSWORD }}
-        run: python tools/find_instagram.py
 
       # Immer speichern – auch wenn ein Schritt fehlschlägt (sonst gäbe es nie einen
       # Zwischenspeicher, auf den der Import bei Überlastung ausweichen kann)
@@ -66,5 +64,48 @@ jobs:
             tools/.geocode_cache.json
             tools/.media_cache.json
             tools/.osm_cache.json
-            tools/.instagram_cache.json
           key: osm-import-${{ github.run_id }}
+
+  fill-gaps:
+    name: Lücken füllen (alle Orte)
+    runs-on: ubuntu-latest
+    needs: import
+    # Unabhängig vom Ergebnis des Imports – die vorhandenen Orte sollen immer geprüft werden
+    if: always()
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Für das Umwandeln der Logo-Bilder (auf dem Mac übernimmt das „sips“)
+      - name: Pillow installieren
+        run: pip install pillow
+
+      - name: Zwischenspeicher laden
+        uses: actions/cache/restore@v4
+        with:
+          path: tools/.instagram_cache.json
+          key: fill-gaps-${{ github.run_id }}
+          restore-keys: fill-gaps-
+
+      - name: Öffnungszeiten, Telefon & Website nachtragen
+        if: always()
+        run: python tools/enrich_places.py
+
+      - name: Instagram-Profile von den Websites suchen
+        if: always()
+        run: python tools/find_instagram.py
+
+      - name: Logo-Vorschläge von den Websites
+        if: always()
+        run: python tools/website_logos.py
+
+      - name: Zwischenspeicher sichern
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: tools/.instagram_cache.json
+          key: fill-gaps-${{ github.run_id }}
