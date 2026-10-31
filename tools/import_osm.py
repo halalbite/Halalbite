@@ -306,6 +306,36 @@ def fetch_osm():
     sys.exit(f"❌ {message}\n   Bitte in 10–30 Minuten erneut versuchen.")
 
 
+STACK_RADIUS_M = 8  # Orte, die näher als 2 × so viel beieinanderliegen, werden auseinandergezogen
+
+
+def spread_stacked(rows):
+    """Orte im selben Gebäude (z. B. Einkaufszentrum) haben in OSM oft (fast) dieselbe Koordinate.
+    Auf der Karte lassen sie sich dann nie einzeln antippen. Darum werden solche Gruppen auf einen
+    kleinen Kreis (STACK_RADIUS_M) um ihren Mittelpunkt verteilt – stabil, d. h. bei jedem Import gleich."""
+    def metres(a, b):
+        dy = (a["latitude"] - b["latitude"]) * 111320
+        dx = (a["longitude"] - b["longitude"]) * 111320 * math.cos(math.radians(a["latitude"]))
+        return math.hypot(dx, dy)
+
+    remaining = sorted(rows, key=lambda r: r["osm_key"])
+    moved = 0
+    while remaining:
+        first = remaining.pop(0)
+        group = [first] + [r for r in remaining if metres(first, r) < 2 * STACK_RADIUS_M]
+        if len(group) < 2:
+            continue
+        remaining = [r for r in remaining if r not in group]
+        lat = sum(r["latitude"] for r in group) / len(group)
+        lon = sum(r["longitude"] for r in group) / len(group)
+        for i, r in enumerate(group):
+            angle = 2 * math.pi * i / len(group)
+            r["latitude"] = lat + STACK_RADIUS_M * math.sin(angle) / 111320
+            r["longitude"] = lon + STACK_RADIUS_M * math.cos(angle) / (111320 * math.cos(math.radians(lat)))
+            moved += 1
+    return moved
+
+
 def to_row(element):
     tags = element.get("tags", {})
     lat = element.get("lat") or element.get("center", {}).get("lat")
@@ -653,6 +683,9 @@ def main():
     else:
         print("   ⚠️ Sperrliste fehlt – bitte supabase/migrations/20261107_deleted_places_stay_deleted.sql ausführen")
     new_rows = [r for r in rows if not is_duplicate(r, verified)]
+    stacked = spread_stacked(new_rows)
+    if stacked:
+        print(f"   📍 {stacked} Orte im selben Gebäude leicht auseinandergezogen (auf der Karte einzeln antippbar)")
 
     if not args.no_geocode:
         # Im Dry-Run nur 5 Beispiele, damit die Vorschau schnell bleibt
