@@ -105,6 +105,25 @@ def hours_from_specification(specs):
     return {"hours": {day: ", ".join(sorted(set(week.get(day, [])))) for day in DAY_NAMES}}
 
 
+# Telefonnummer im Text: "Tel.: 040 123456", "Telefon 0176/1234567", "☎ +49 30 123 45 67"
+PHONE_TEXT = re.compile(r"(?:Tel(?:efon)?|Fon|Phone|☎|📞)\.?\s*[:.]?\s*(\+?\d[\d\s/().\-]{5,22}\d)", re.I)
+SUBPAGES = ("impressum", "kontakt", "contact", "imprint")
+
+
+def phone_in(page):
+    """Telefonnummer aus tel:-Links oder dem Text (Fax-Nummern werden übersprungen)"""
+    for link in re.findall(r'href=["\']tel:([^"\']+)["\']', page, re.I):
+        number = urllib.parse.unquote(link).strip()
+        if len(re.sub(r"\D", "", number)) >= 6:
+            return number
+    text = re.sub(r"<[^>]+>", " ", page)
+    for match in PHONE_TEXT.finditer(text):
+        before = text[max(0, match.start() - 12):match.start()].lower()
+        if "fax" not in before and len(re.sub(r"\D", "", match.group(1))) >= 6:
+            return re.sub(r"\s+", " ", match.group(1)).strip()
+    return None
+
+
 def from_website(row):
     """Sucht Öffnungszeiten/Telefon auf der Website → {feld: wert}"""
     site = normalized_site(row["website"])
@@ -130,6 +149,19 @@ def from_website(row):
         if is_empty(row.get("phone")) and "phone" not in found and isinstance(phone, str) \
                 and len(re.sub(r"\D", "", phone)) >= 6:
             found["phone"] = phone.strip()
+
+    # Telefon fehlt noch → Startseite, dann Impressum/Kontakt (in Deutschland Pflichtangabe)
+    if is_empty(row.get("phone")) and "phone" not in found:
+        number = phone_in(page)
+        if not number:
+            for sub in SUBPAGES:
+                link = re.search(rf'href="([^"]*{sub}[^"]*)"', page, re.I)
+                target = urllib.parse.urljoin(site, link.group(1)) if link else urllib.parse.urljoin(site + "/", sub)
+                subpage = fetch_page(target)
+                if subpage and (number := phone_in(subpage)):
+                    break
+        if number:
+            found["phone"] = number
     return found
 
 

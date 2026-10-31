@@ -18,7 +18,8 @@ Freigabe unter Einstellungen → Admin → Prüfen → „Logos“.
   • zu kleine Bilder und SVG-Dateien (kann die App nicht anzeigen)
 
 Voraussetzung: SQL-Skript supabase/migrations/20261108_logo_candidates_website.sql ausgeführt.
-Läuft nur auf dem Mac (nutzt das eingebaute Programm „sips“ zum Umwandeln der Bilder).
+Bilder werden auf dem Mac mit „sips“ umgewandelt, sonst (z. B. GitHub Actions) mit Pillow
+(pip install pillow).
 
 Benutzung (Terminal):
     cd ~/Downloads/HalalBite2
@@ -30,6 +31,7 @@ import argparse
 import hashlib
 import html as html_lib
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -97,6 +99,22 @@ def candidate_urls(page, base):
     return ordered[:6]
 
 
+def convert_with_pillow(source, target):
+    """Wie sips: in PNG umwandeln, längste Seite max. 512 px → (Breite, Höhe) oder None"""
+    try:
+        from PIL import Image
+    except ImportError:
+        sys.exit("❌ Pillow fehlt: pip install pillow")
+    try:
+        with Image.open(source) as image:
+            image = image.convert("RGBA")
+            image.thumbnail((512, 512))
+            image.save(target, "PNG")
+            return image.size
+    except Exception:
+        return None
+
+
 def image_size(file):
     result = subprocess.run(["sips", "-g", "pixelWidth", "-g", "pixelHeight", str(file)],
                             capture_output=True, text=True)
@@ -114,11 +132,17 @@ def download_as_png(link, target):
     try:
         if result.returncode != 0 or code != "200" or "svg" in content_type or link.lower().split("?")[0].endswith(".svg"):
             return None
-        converted = subprocess.run(["sips", "-s", "format", "png", "-Z", "512", str(raw), "--out", str(target)],
-                                   capture_output=True)
-        if converted.returncode != 0 or not target.exists():
-            return None
-        width, height = image_size(target)
+        if shutil.which("sips"):
+            converted = subprocess.run(["sips", "-s", "format", "png", "-Z", "512", str(raw), "--out", str(target)],
+                                       capture_output=True)
+            if converted.returncode != 0 or not target.exists():
+                return None
+            width, height = image_size(target)
+        else:
+            size = convert_with_pillow(raw, target)
+            if not size:
+                return None
+            width, height = size
         if min(width, height) < MIN_SIDE or max(width, height) < MIN_LONG_SIDE:
             return None
         return width, height

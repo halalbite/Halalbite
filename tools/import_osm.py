@@ -718,6 +718,13 @@ def main():
         print(f"   🚫 {len(blocked)} gelöschte Orte auf der Sperrliste")
     else:
         print("   ⚠️ Sperrliste fehlt – bitte supabase/migrations/20261107_deleted_places_stay_deleted.sql ausführen")
+    # Ausgeblendete (= in der App gelöschte) OSM-Orte auch dann nicht neu anlegen, wenn sie in OSM
+    # unter einer neuen Kennung auftauchen (z. B. als Gebäude statt als Punkt neu eingetragen)
+    if headers:
+        status, hidden = fetch_all_rows(url, "osm_places?select=name,latitude,longitude&hidden=is.true", headers)
+        if status == 200:
+            verified += hidden
+            print(f"   🙈 {len(hidden)} ausgeblendete Orte werden nicht neu angelegt")
     new_rows = [r for r in rows if not is_duplicate(r, verified)]
     stacked = spread_stacked(new_rows)
     if stacked:
