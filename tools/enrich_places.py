@@ -124,17 +124,46 @@ def phone_in(page):
     return None
 
 
-def from_website(row):
-    """Sucht Öffnungszeiten/Telefon auf der Website → {feld: wert}"""
-    site = normalized_site(row["website"])
-    host = urllib.parse.urlparse(site).netloc.lower()
-    if any(domain in host for domain in DIRECTORY_DOMAINS):
-        return {}
-    page = fetch_page(site)
-    if not page:
-        return {}
+# Straßenwörter, die allein nichts über die Filiale aussagen
+GENERIC_STREET_WORDS = {"strae", "strasse", "str", "platz", "allee", "weg", "gasse", "damm", "ring", "markt",
+                        "hauptstrae", "bahnhofstrae", "bahnhofplatz", "deutschland"}
+
+
+def address_keys(row):
+    """PLZ, Straßenwörter und Stadt eines Ortes (normalisiert) für den Abgleich mit Filialangaben"""
+    text = row.get("address") or " ".join(x for x in (row.get("street"), row.get("postal_code"), row.get("city")) if x)
+    postcode = re.search(r"\b\d{5}\b", text or "")
+    street = row.get("street") or (text or "").split(",")[0]
+    words = [w for w in normalize(re.sub(r"\d.*$", "", street)).split() if len(w) >= 5 and w not in GENERIC_STREET_WORDS]
+    parts = [p for p in (text or "").split(",")[1:] if normalize(p) not in ("", "deutschland", "germany")]
+    city = normalize(row.get("city") or (parts[-1] if parts else ""))
+    city = re.sub(r"^\d{5} ", "", city)
+    return postcode.group(0) if postcode else None, words, city
+
+
+def mentions_address(text, keys):
+    """Passt ein Text (Filialadresse, Link, Seite) zu genau diesem Ort?
+    PLZ reicht; sonst ein markantes Straßenwort – plus Stadt, falls bekannt."""
+    postcode, words, city = keys
+    flat = normalize(text)
+    if postcode and re.search(rf"\b{postcode}\b", flat):
+        return True
+    if words and any(w in flat for w in words):
+        return not city or city in flat
+    return False
+
+
+def extract(objects, row, keys, need_address):
+    """Öffnungszeiten/Telefon aus schema.org-Objekten. Hat ein Objekt eine Adresse, muss sie
+    zum Ort passen; Objekte ohne Adresse zählen nur, wenn need_address False ist."""
     found = {}
-    for obj in json_ld_objects(page):
+    for obj in objects:
+        address = obj.get("address")
+        if address:
+            if not mentions_address(json.dumps(address, ensure_ascii=False), keys):
+                continue  # andere Filiale
+        elif need_address:
+            continue
         if is_empty(row.get("opening_hours")) and "opening_hours" not in found:
             hours = None
             if obj.get("openingHoursSpecification"):
@@ -149,9 +178,54 @@ def from_website(row):
         if is_empty(row.get("phone")) and "phone" not in found and isinstance(phone, str) \
                 and len(re.sub(r"\D", "", phone)) >= 6:
             found["phone"] = phone.strip()
+    return found
+
+
+def branch_links(page, site, keys):
+    """Links auf der Startseite, die zur Filiale führen (Linktext oder Adresse nennt PLZ/Straße)"""
+    links = []
+    for href, label in re.findall(r'<a\b[^>]*href=["\']([^"\'#]+)["\'][^>]*>(.*?)</a>', page, re.I | re.S):
+        if mentions_address(urllib.parse.unquote(href) + " " + re.sub(r"<[^>]+>", " ", label), keys):
+            link = urllib.parse.urljoin(site, href)
+            if link not in links and urllib.parse.urlparse(link).netloc == urllib.parse.urlparse(site).netloc:
+                links.append(link)
+    return links[:3]
+
+
+def missing(row, found):
+    return [f for f in ("opening_hours", "phone") if is_empty(row.get(f)) and f not in found]
+
+
+def from_website(row, is_chain=False):
+    """Sucht Öffnungszeiten/Telefon auf der Website → {feld: wert}.
+    Bei Ketten (dieselbe Website bei mehreren Orten) nur Angaben, die nachweislich zur
+    Adresse dieser Filiale gehören – sonst bekämen alle Filialen die Zeiten einer einzigen."""
+    site = normalized_site(row["website"])
+    host = urllib.parse.urlparse(site).netloc.lower()
+    if any(domain in host for domain in DIRECTORY_DOMAINS):
+        return {}
+    page = fetch_page(site)
+    if not page:
+        return {}
+    keys = address_keys(row)
+    found = extract(json_ld_objects(page), row, keys, need_address=is_chain)
+
+    if is_chain:
+        # Filialseite suchen und nur nutzen, wenn dort die Adresse dieser Filiale steht
+        for link in branch_links(page, site, keys) if missing(row, found) else []:
+            subpage = fetch_page(link)
+            if not subpage or not mentions_address(re.sub(r"<[^>]+>", " ", subpage), keys):
+                continue
+            for field, value in extract(json_ld_objects(subpage), row, keys, need_address=False).items():
+                found.setdefault(field, value)
+            if "phone" in missing(row, found) and (number := phone_in(subpage)):
+                found["phone"] = number
+            if not missing(row, found):
+                break
+        return found  # Impressum-Nummer einer Kette ist meist die der Zentrale → nicht übernehmen
 
     # Telefon fehlt noch → Startseite, dann Impressum/Kontakt (in Deutschland Pflichtangabe)
-    if is_empty(row.get("phone")) and "phone" not in found:
+    if "phone" in missing(row, found):
         number = phone_in(page)
         if not number:
             for sub in SUBPAGES:
@@ -229,13 +303,22 @@ def run(url, headers, dry_run=False, limit=None):
         "restaurants": "",
         "osm_places": "&hidden=is.false&promoted_restaurant_id=is.null",
     }
-    rows = []
+    address_columns = {"restaurants": "address", "osm_places": "street,postal_code,city"}
+    all_rows = []
     for table, extra in tables.items():
-        status, data = fetch_all_rows(url, f"{table}?select=id,name,latitude,longitude,{','.join(FIELDS)}{extra}", headers)
+        columns = f"id,name,latitude,longitude,{address_columns[table]},{','.join(FIELDS)}"
+        status, data = fetch_all_rows(url, f"{table}?select={columns}{extra}", headers)
         if status != 200:
             print(f"   ⚠️ {table} konnte nicht geladen werden ({status}) – übersprungen")
             continue
-        rows += [{**r, "table": table} for r in data if any(is_empty(r.get(f)) for f in FIELDS)]
+        all_rows += [{**r, "table": table} for r in data]
+    rows = [r for r in all_rows if any(is_empty(r.get(f)) for f in FIELDS)]
+
+    # Ketten: dieselbe Website bei mehreren Orten (z. B. back-lava.de für drei Filialen)
+    def host_of(row):
+        return urllib.parse.urlparse(normalized_site(row["website"])).netloc.lower().removeprefix("www.")
+    host_count = Counter(host_of(r) for r in all_rows if not is_empty(r.get("website")))
+    chain_hosts = {h for h, n in host_count.items() if n > 1}
     if limit:
         rows = rows[:limit]
     print(f"🔎 {len(rows)} Orte mit fehlenden Angaben (Öffnungszeiten, Telefon oder Website)")
@@ -243,9 +326,10 @@ def run(url, headers, dry_run=False, limit=None):
     updates = {}
     with_site = [r for r in rows if not is_empty(r.get("website"))
                  and (is_empty(r.get("opening_hours")) or is_empty(r.get("phone")))]
-    print(f"🌐 Prüfe {len(with_site)} Websites …")
+    print(f"🌐 Prüfe {len(with_site)} Websites ({sum(host_of(r) in chain_hosts for r in with_site)} davon Ketten-Filialen) …")
     with ThreadPoolExecutor(max_workers=8) as pool:
-        for row, found in zip(with_site, pool.map(from_website, with_site)):
+        results = pool.map(lambda r: from_website(r, is_chain=host_of(r) in chain_hosts), with_site)
+        for row, found in zip(with_site, results):
             if found:
                 updates[(row["table"], row["id"])] = (row, {**found, "_source": "Website"})
 
