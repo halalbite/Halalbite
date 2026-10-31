@@ -99,6 +99,14 @@ jobs:
         if: always()
         run: python tools/find_instagram.py
 
+      # Instagram-Profilbilder als Logo-Vorschläge (offizielle Meta-API). Braucht das Secret
+      # META_ACCESS_TOKEN (60-Tage-Token) – fehlt oder läuft er ab, gibt es nur eine gelbe Warnung.
+      - name: Logo-Vorschläge von Instagram
+        if: always()
+        env:
+          META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
+        run: python tools/instagram_logos.py
+
       - name: Logo-Vorschläge von den Websites
         if: always()
         run: python tools/website_logos.py
