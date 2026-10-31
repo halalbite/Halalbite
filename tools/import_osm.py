@@ -289,7 +289,8 @@ def fetch_osm():
                 return data["elements"]
             if isinstance(data, dict) and data.get("remark"):
                 data = f"unvollständig: {data['remark']}"
-            reason = "ausgelastet" if "capacity" in str(data) or status in (429, 502, 503, 504) else f"HTTP {status}"
+            reason = ("ausgelastet" if "capacity" in str(data) or status in (429, 502, 503, 504)
+                      else "keine Antwort (Zeitüberschreitung)" if status == 0 else f"HTTP {status}")
             text = re.sub(r"<[^>]+>|\s+", " ", str(data)).strip()  # HTML-Fehlerseite → kurzer Text
             last_error = f"{server}: {status} {text[:150]}"
             print(f"   ⚠️ {server.split('/')[2]}: {reason}")
@@ -629,6 +630,10 @@ def keep_media_decisions(rows, url, headers):
     return sum(1 for p in existing.values() if not p.get("hidden") and p.get("promoted_restaurant_id") is None)
 
 
+# Für refresh_login(): Sitzung des letzten Logins (Refresh-Token + Zeitpunkt)
+_SESSION = {}
+
+
 def login(url, key):
     # Automatischer Betrieb (GitHub Actions): Zugangsdaten aus Umgebungsvariablen
     email = os.environ.get("HALALBITE_ADMIN_EMAIL")
@@ -642,6 +647,33 @@ def login(url, key):
                         body={"email": email, "password": password})
     if status != 200:
         sys.exit(f"❌ Login fehlgeschlagen ({status}). E-Mail/Passwort prüfen.")
+    token = data["access_token"]
+
+    # Sofort prüfen, ob das Konto Admin ist – sonst scheitert erst das Hochladen (Fehler 42501)
+    status, is_admin = http("POST", f"{url}/rest/v1/rpc/is_admin",
+                            headers={"apikey": key, "Authorization": f"Bearer {token}",
+                                     "Content-Type": "application/json"}, body={})
+    if status == 200 and is_admin is False:
+        masked = re.sub(r"(?<=.).(?=[^@]*@)", "•", email)
+        sys.exit(f"❌ Das Konto {masked} ist kein Admin. Entweder E-Mail/Passwort eines Admin-Kontos verwenden "
+                 "(bei GitHub: Settings → Secrets → HALALBITE_ADMIN_EMAIL/PASSWORD) oder das Konto im SQL Editor "
+                 "freischalten:\n   insert into public.admins (user_id) select id from auth.users "
+                 "where email = 'deine@email.de' on conflict do nothing;")
+    _SESSION.update(refresh_token=data.get("refresh_token"), at=time.time())
+    return token
+
+
+def refresh_login(url, key, max_age=20 * 60):
+    """Neuen Zugangsschlüssel holen, wenn der Login älter als max_age Sekunden ist
+    (lange Läufe mit Wartezeiten). Gibt None zurück, wenn nichts zu tun ist."""
+    if not _SESSION.get("refresh_token") or time.time() - _SESSION.get("at", 0) < max_age:
+        return None
+    status, data = http("POST", f"{url}/auth/v1/token?grant_type=refresh_token",
+                        headers={"apikey": key, "Content-Type": "application/json"},
+                        body={"refresh_token": _SESSION["refresh_token"]})
+    if status != 200:
+        return None
+    _SESSION.update(refresh_token=data.get("refresh_token"), at=time.time())
     return data["access_token"]
 
 
@@ -721,6 +753,10 @@ def main():
         print("\nDry-Run – nichts hochgeladen.")
         return
 
+    # Der Lauf kann durch Wartezeiten lange dauern → Anmeldung vor dem Lesen/Hochladen erneuern
+    fresh_token = refresh_login(url, key)
+    if fresh_token:
+        headers["Authorization"] = f"Bearer {fresh_token}"
     visible_before = keep_media_decisions(new_rows, url, headers)
     run_started = datetime.now(timezone.utc).isoformat()
 
