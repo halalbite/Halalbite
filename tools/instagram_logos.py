@@ -53,18 +53,49 @@ def graph(path, token, **params):
     return data, None
 
 
+def fail(message):
+    """Abbrechen. Auf GitHub als gelbe Warnung (die anderen Schritte laufen weiter), sonst als Fehler."""
+    if os.environ.get("GITHUB_ACTIONS"):
+        print(f"::warning title=Instagram-Logos übersprungen::{message.splitlines()[0]}")
+        print(message)
+        sys.exit(0)
+    sys.exit(f"❌ {message}")
+
+
+def warn_if_expiring(token, days=10):
+    """Hinweis, wenn der Token bald abläuft (langlebige Tokens gelten 60 Tage)"""
+    data, error = graph("debug_token", token, input_token=token)
+    expires = (data or {}).get("data", {}).get("expires_at")
+    if error or not expires:  # 0 = läuft nicht ab (z. B. Seiten-Token)
+        return
+    left = (expires - time.time()) / 86400
+    if left < days:
+        message = (f"Der Meta-Token läuft in {max(left, 0):.0f} Tagen ab – bitte erneuern "
+                   "(AppStore/05_Instagram-Logos.md, „Token für GitHub“).")
+        print(f"::warning title=Meta-Token läuft bald ab::{message}" if os.environ.get("GITHUB_ACTIONS")
+              else f"⚠️  {message}")
+
+
 def own_instagram_id(token):
-    """ID des eigenen Instagram-Business-Kontos (über die verknüpfte Facebook-Seite)"""
+    """ID des eigenen Instagram-Business-Kontos – mit Nutzer-Token über die verknüpfte
+    Facebook-Seite, mit Seiten-Token direkt"""
     data, error = graph("me/accounts", token, fields="name,instagram_business_account{id,username}")
-    if error:
-        sys.exit(f"❌ Token ungültig oder ohne Rechte: {error}")
-    for page in data.get("data", []):
+    pages = (data or {}).get("data", [])
+    if error or not pages:
+        # Seiten-Token: "me" ist dann die Facebook-Seite selbst
+        page, page_error = graph("me", token, fields="name,instagram_business_account{id,username}")
+        if page and page.get("instagram_business_account"):
+            pages, error = [page], None
+        elif error or page_error:
+            fail(f"Meta-Token ungültig oder abgelaufen: {error or page_error}\n"
+                 "   → Neuen Token holen: AppStore/05_Instagram-Logos.md")
+    for page in pages:
         account = page.get("instagram_business_account")
         if account:
             print(f"✅ Abfrage über @{account.get('username')} (Facebook-Seite „{page.get('name')}“)")
             return account["id"], account.get("username")
-    sys.exit("❌ Keine Facebook-Seite mit verknüpftem Instagram-Business-Konto gefunden.\n"
-             "   → Anleitung: AppStore/05_Instagram-Logos.md, Schritt 1–2")
+    fail("Keine Facebook-Seite mit verknüpftem Instagram-Business-Konto gefunden.\n"
+         "   → Anleitung: AppStore/05_Instagram-Logos.md, Schritt 1–2")
 
 
 # Fehler, die nicht am einzelnen Restaurant liegen, sondern an App/Token → sofort abbrechen
@@ -155,15 +186,17 @@ def main():
                         help="Meta-Zugriffsschlüssel (oder Umgebungsvariable META_ACCESS_TOKEN)")
     args = parser.parse_args()
     if not args.token:
-        sys.exit("❌ Kein Token. Erst: export META_ACCESS_TOKEN=\"…\" (siehe AppStore/05_Instagram-Logos.md)")
+        fail("Kein Meta-Token. Lokal: export META_ACCESS_TOKEN=\"…\" – auf GitHub: Secret META_ACCESS_TOKEN "
+             "anlegen (siehe AppStore/05_Instagram-Logos.md)")
 
     url, key = supabase_config()
     own_id, own_username = own_instagram_id(args.token)
     # Vorabtest am eigenen Konto: klappt das nicht, klappt es bei keinem Restaurant
     _, error = profile_of(own_username, own_id, args.token)
     if error:
-        sys.exit(f"❌ Testabfrage für @{own_username} fehlgeschlagen: {error}{SETUP_HINT}")
+        fail(f"Testabfrage für @{own_username} fehlgeschlagen: {error}{SETUP_HINT}")
     print("✅ Business Discovery funktioniert")
+    warn_if_expiring(args.token)
 
     headers = {"apikey": key, "Authorization": f"Bearer {key}"}
     if not args.dry_run:
@@ -184,7 +217,7 @@ def main():
         profile, error = profile_of(handle, own_id, args.token)
         label = f"[{i}/{len(rows)}] {row['name']} (@{handle})"
         if error and error.startswith(GLOBAL_ERRORS):
-            sys.exit(f"   ❌ {label}: {error}{SETUP_HINT}")
+            fail(f"{label}: {error}{SETUP_HINT}")
         if error:
             # Business Discovery kennt nur Business-/Creator-Konten
             key_ = "kein Business-Konto" if "business" in error.lower() or "user" in error.lower() else "Fehler"
