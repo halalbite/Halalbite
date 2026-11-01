@@ -91,6 +91,10 @@ jobs:
           key: fill-gaps-${{ github.run_id }}
           restore-keys: fill-gaps-
 
+      - name: Restaurantadressen ergänzen
+          if: always()
+          run: python tools/enrich_restaurant_addresses.py
+
       - name: Öffnungszeiten, Telefon & Website nachtragen
         if: always()
         run: python tools/enrich_places.py
