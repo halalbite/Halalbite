@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HalalBite – Halal essen in deiner Nähe</title>
+<meta name="description" content="Diesen Halal-Ort in der HalalBite-App ansehen.">
+<meta property="og:title" content="Halal-Tipp auf HalalBite">
+<meta property="og:description" content="Öffne den Ort in der HalalBite-App – Halal essen in deiner Nähe.">
+<meta name="apple-itunes-app" content="app-id=APP_STORE_ID">
+<style>
+:root{color-scheme:light dark;--g:#00553c;--gd:#003728;--gold:#f5ce4f}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+  font:17px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#fff;
+  background:linear-gradient(180deg,var(--gd),var(--g));text-align:center;padding:24px}
+.card{max-width:420px;width:100%}
+.brand{font:600 44px/1.1 "New York",Georgia,serif;letter-spacing:-.5px;margin:0}
+.brand i{color:var(--gold);font-weight:700}
+.tag{text-transform:uppercase;letter-spacing:2px;font-size:12px;opacity:.75;margin:8px 0 32px}
+h1{font-size:26px;margin:0 0 6px}
+.sub{opacity:.8;margin:0 0 28px}
+a.btn{display:block;padding:15px;border-radius:14px;font-weight:600;text-decoration:none;margin-bottom:12px}
+.primary{background:var(--gold);color:var(--gd)}
+.secondary{background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(245,206,79,.35)}
+.small{font-size:13px;opacity:.6;margin-top:24px}
+.small a{color:#fff}
+</style></head><body>
+<div class="card">
+  <p class="brand">Halal<i>Bite</i></p>
+  <p class="tag">Halal essen in deiner Nähe</p>
+  <h1 id="name">Ein Halal-Tipp für dich</h1>
+  <p class="sub" id="sub">Öffne den Ort in der HalalBite-App.</p>
+  <a class="btn primary" id="open" href="#">In HalalBite öffnen</a>
+  <a class="btn secondary" id="store" href="#">HalalBite kostenlos laden</a>
+  <a class="btn secondary" id="maps" href="#" hidden>In Apple Maps ansehen</a>
+  <p class="small"><a href="index.html">Support</a> · <a href="datenschutz.html">Datenschutz</a></p>
+</div>
+<script>
+// Link-Format: ort.html?id=123&n=Name&ll=53.55,9.99
+// TODO: APP_STORE_ID durch die numerische App-ID aus App Store Connect ersetzen (App-Informationen → Apple-ID)
+var APP_STORE = "https://apps.apple.com/de/app/id" + "APP_STORE_ID";
+var p = new URLSearchParams(location.search);
+var id = (p.get("id") || "").replace(/[^0-9]/g, "");
+var name = p.get("n") || "";
+var ll = (p.get("ll") || "").replace(/[^0-9.,-]/g, "");
+
+if (name) {
+  document.getElementById("name").textContent = name;
+  document.title = name + " – HalalBite";
+}
+var appURL = "halalbite://ort/" + id + (ll ? "?ll=" + ll : "");
+document.getElementById("open").href = appURL;
+document.getElementById("store").href = APP_STORE.indexOf("APP_STORE_ID") >= 0
+  ? "https://apps.apple.com/de/search?term=HalalBite" : APP_STORE;
+if (ll) {
+  var maps = document.getElementById("maps");
+  maps.hidden = false;
+  maps.href = "https://maps.apple.com/?q=" + encodeURIComponent(name) + "&ll=" + ll;
+}
+// Auf dem iPhone direkt versuchen, die App zu öffnen
+if (id && /iPhone|iPad|iPod/.test(navigator.userAgent)) {
+  setTimeout(function () { location.href = appURL; }, 300);
+}
+</script>
+</body></html>
