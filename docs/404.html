@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HalalBite</title>
+<script>
+var m = location.pathname.match(/\/o\/(\d+)\.html$/);
+var base = location.pathname.replace(/\/o\/[^/]*$/, "/").replace(/[^/]*$/, "");
+if (m) {
+  var q = location.search ? "&" + location.search.slice(1) : "";
+  location.replace(base + "ort.html?id=" + m[1] + q);
+} else {
+  location.replace(base + "index.html");
+}
+</script>
+</head><body><p><a href="https://halalbite.github.io/Halalbite/">HalalBite</a></p></body></html>
